@@ -1,0 +1,58 @@
+--// Services
+local RepStorage = game:GetService("ReplicatedStorage")
+
+--// Remote paths
+local Net = RepStorage.Packages._Index["sleitnick_net@0.2.0"].net
+
+local EquipTool = Net["RE/EquipToolFromHotbar"]
+local ChargeRod = Net["RF/ChargeFishingRod"]
+local StartMini = Net["RF/RequestFishingMinigameStarted"]
+local FishingDone = Net["RE/FishingCompleted"]
+local CancelInputs = Net["RF/CancelFishingInputs"]
+
+--// Settings
+local fishing = false
+local completeDelay = 1.5   -- edit if needed
+
+--// Main Loop
+local function InstantFishLoop()
+    while fishing do
+        
+        -- force rod equip
+        pcall(function()
+            EquipTool:FireServer(1)
+        end)
+
+        -- charge rod
+        pcall(function()
+            ChargeRod:InvokeServer(os.time() + os.clock())
+        end)
+
+        -- start minigame
+        pcall(function()
+            StartMini:InvokeServer(-139.63045, 0.99647927)
+        end)
+
+        task.wait(completeDelay)
+
+        -- complete fish
+        pcall(function()
+            FishingDone:FireServer()
+        end)
+
+        task.wait(0.3)
+
+        -- cleanup
+        pcall(function()
+            CancelInputs:InvokeServer()
+        end)
+
+        task.wait(0.1)
+    end
+end
+
+--// Toggle ON
+fishing = true
+task.spawn(InstantFishLoop)
+
+print("Instant Fishing ENABLED")
