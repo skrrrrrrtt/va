@@ -1,0 +1,169 @@
+-- CLEAN PLS DONATE: Auto-Claim + Teleport + Face Forward + Anti-AFK + Auto-Jump + COLORED Booth Text
+-- Uses SetCustomization remote (table) from your cc.txt script
+-- Edit _G.goalAmount and _G.textHex as desired
+
+repeat task.wait() until game:IsLoaded()
+
+-- CONFIG
+_G.goalAmount = 1000          -- goal (right side of "GOAL X / Y")
+_G.textHex   = "#32CD32"      -- booth text color (default: LimeGreen). Use "#RRGGBB"
+_G.font      = Enum.Font.Gotham -- font for booth text
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+
+-- Anti-AFK
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+-- wait for UI & leaderstat
+local pg = LocalPlayer:WaitForChild("PlayerGui")
+repeat task.wait() until pg:FindFirstChild("MapUIContainer") and pg.MapUIContainer:FindFirstChild("MapUI") and pg.MapUIContainer.MapUI:FindFirstChild("BoothUI")
+local BoothUI = pg.MapUIContainer.MapUI:WaitForChild("BoothUI")
+local raisedStat = LocalPlayer:WaitForChild("leaderstats"):WaitForChild("Raised")
+
+-- hex -> Color3
+local function hexToColor3(hex)
+    if not hex then return Color3.new(1,1,1) end
+    hex = tostring(hex):gsub("#","")
+    if #hex ~= 6 then return Color3.new(1,1,1) end
+    local r = tonumber("0x"..hex:sub(1,2)) or 255
+    local g = tonumber("0x"..hex:sub(3,4)) or 255
+    local b = tonumber("0x"..hex:sub(5,6)) or 255
+    return Color3.fromRGB(r,g,b)
+end
+
+local textColor = hexToColor3(_G.textHex)
+
+-- find unclaimed booths (mirrors logic from your cc.txt)
+local function findUnclaimed()
+    local list = {}
+    for _, ui in ipairs(BoothUI:GetChildren()) do
+        if ui:FindFirstChild("Details") and ui.Details:FindFirstChild("Owner") and tostring(ui.Details.Owner.Text):lower():find("unclaim") then
+            local num = tonumber(tostring(ui.Name):match("%d+"))
+            if num then
+                for _, booth in ipairs(workspace:WaitForChild("BoothInteractions"):GetChildren()) do
+                    if booth:GetAttribute("BoothSlot") == num then
+                        table.insert(list, num)
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return list
+end
+
+-- update booth text using SetCustomization remote (table payload)
+local function updateBoothTextForServer()
+    local current = tonumber(raisedStat.Value) or 0
+    local text = "GOAL " .. tostring(current) .. " / " .. tostring(_G.goalAmount)
+
+    local ok, Rem = pcall(function() return require(ReplicatedStorage.Remotes) end)
+    if not ok or not Rem or not Rem.Event then
+        warn("Couldn't require Remotes module")
+        return
+    end
+
+    pcall(function()
+        Rem.Event("SetCustomization"):FireServer({
+            ["text"] = text,
+            ["richText"] = true,
+            ["textFont"] = _G.font,
+            ["textColor"] = textColor,
+            ["strokeColor"] = Color3.new(0,0,0),
+            ["strokeOpacity"] = 0,
+            -- keep button fields defaultish to avoid server-side validation issues
+            ["buttonStrokeColor"] = Color3.new(0,0,0),
+            ["buttonTextColor"] = Color3.new(1,1,1),
+            ["buttonColor"] = Color3.fromRGB(98,255,0),
+            ["buttonHoverColor"] = Color3.fromRGB(98,255,0),
+            ["buttonLayout"] = ""
+        }, "booth")
+    end)
+end
+
+-- claim & teleport (uses ClaimBooth invoke remote)
+local function claimBooth()
+    local unclaimed = findUnclaimed()
+    if #unclaimed == 0 then
+        warn("No unclaimed booths found")
+        return false
+    end
+
+    local boothNum = unclaimed[1]
+
+    local ok, Rem = pcall(function() return require(ReplicatedStorage.Remotes) end)
+    if not ok or not Rem or not Rem.Event or not Rem.Function then
+        warn("Couldn't require Remotes module for claiming")
+        return false
+    end
+
+    -- Claim (InvokeServer)
+    local suc, err = pcall(function()
+        Rem.Event("ClaimBooth"):InvokeServer(boothNum)
+    end)
+    if not suc then
+        warn("Claim failed:", err)
+        return false
+    end
+
+    task.wait(0.8)
+
+    -- Teleport to the booth part in workspace.BoothInteractions
+    for _, booth in ipairs(workspace:WaitForChild("BoothInteractions"):GetChildren()) do
+        if booth:GetAttribute("BoothSlot") == boothNum and booth:IsA("BasePart") then
+            -- move HRP near booth and force facing forward
+            local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+            local hrp = char:WaitForChild("HumanoidRootPart")
+            hrp.CFrame = booth.CFrame * CFrame.new(3, 3, 3)
+            task.wait(0.12)
+            -- face forward (North) while keeping position
+            hrp.CFrame = CFrame.new(hrp.Position) * CFrame.Angles(0, math.rad(0), 0)
+            break
+        end
+    end
+
+    -- Immediately update booth text after claiming
+    updateBoothTextForServer()
+    print("Claimed booth:", boothNum)
+    return true
+end
+
+-- try claim now and on respawn
+claimBooth()
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(2)
+    claimBooth()
+end)
+
+-- auto-jump on donation and update text
+do
+    local last = raisedStat.Value
+    raisedStat.Changed:Connect(function(new)
+        local newVal = new
+        if newVal > last then
+            -- jump 3 times (non-blocking)
+            task.spawn(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    for i = 1, 3 do
+                        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                        task.wait(0.35)
+                    end
+                end
+            end)
+
+            -- update the booth text after donation
+            pcall(updateBoothTextForServer)
+        end
+        last = newVal
+    end)
+end
+
+print("Loaded: Auto-Claim + Teleport + Face Forward + Anti-AFK + Auto-Jump + COLORED Booth Text")
