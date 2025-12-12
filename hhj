@@ -1,0 +1,246 @@
+repeat task.wait() until game:IsLoaded()
+
+local function log(msg)
+    print("[PLSD] >> " .. tostring(msg))
+end
+
+log("Starting final fixed script...")
+
+-----------------------------------------------------
+-- USER SETTINGS
+-----------------------------------------------------
+_G.goalAmount = 1000
+_G.enableBegging = false -- <<< ENABLE / DISABLE BEGGING
+_G.begInterval = 45
+_G.begMessages = {
+    "please donate if you can",
+    "any small donation helps",
+    "trying to reach my goal",
+    "even 1 robux helps",
+    "saving up for my booth",
+    "grinding my goal",
+    "trying to upgrade my stand",
+    "any support means a lot"
+}
+
+_G.minPlayersBeforeHop = 5
+_G.serverSearchPages = 8
+_G.initialHopWait = 15
+_G.boardUpdateInterval = 8
+
+-----------------------------------------------------
+-- SERVICES
+-----------------------------------------------------
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Workspace = workspace
+local VirtualUser = game:GetService("VirtualUser")
+
+local TextChatService = nil
+pcall(function() TextChatService = game:GetService("TextChatService") end)
+
+-----------------------------------------------------
+-- ANTI-AFK
+-----------------------------------------------------
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+-----------------------------------------------------
+-- WAIT FOR UI + CHARACTER
+-----------------------------------------------------
+local pg = LocalPlayer:WaitForChild("PlayerGui")
+repeat task.wait() until pg:FindFirstChild("MapUIContainer")
+
+local BoothUI = pg.MapUIContainer.MapUI:WaitForChild("BoothUI")
+repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+local raisedStat = LocalPlayer:WaitForChild("leaderstats"):WaitForChild("Raised")
+
+-----------------------------------------------------
+-- LOAD REMOTES SAFELY
+-----------------------------------------------------
+local function requireSafe(m)
+    local r
+    repeat
+        local ok, res = pcall(require, m)
+        if ok then r = res end
+        task.wait()
+    until r
+    return r
+end
+
+local RemotesModule = nil
+if ReplicatedStorage:FindFirstChild("Remotes") then
+    RemotesModule = requireSafe(ReplicatedStorage.Remotes)
+end
+
+-----------------------------------------------------
+-- SAFE BOOTH CHECKING (fix boothinteraction nil)
+-----------------------------------------------------
+local function isRealBooth(obj)
+    if not obj then return false end
+    if typeof(obj) ~= "Instance" then return false end
+    if typeof(obj.GetAttribute) ~= "function" then return false end
+
+    local slot = obj:GetAttribute("BoothSlot")
+    return typeof(slot) == "number"
+end
+
+local function findUnclaimed()
+    local found = {}
+    for _, ui in ipairs(BoothUI:GetChildren()) do
+        if ui:FindFirstChild("Details") and ui.Details:FindFirstChild("Owner") then
+            local owner = tostring(ui.Details.Owner.Text):lower()
+            if owner:find("unclaim") then
+                local slot = tonumber(ui.Name:match("%d+"))
+                if slot then table.insert(found, slot) end
+            end
+        end
+    end
+    return found
+end
+
+local function tryClaim(slot)
+    -- remote
+    if RemotesModule then
+        pcall(function()
+            RemotesModule.Event("ClaimBooth"):InvokeServer(slot)
+        end)
+    end
+
+    task.wait(0.5)
+
+    -- proximity fallback
+    for _, booth in ipairs(Workspace.BoothInteractions:GetChildren()) do
+        if isRealBooth(booth) and booth:GetAttribute("BoothSlot") == slot then
+            local prompt = booth:FindFirstChildOfClass("ProximityPrompt")
+            if prompt then
+                pcall(function() fireproximityprompt(prompt) end)
+            end
+        end
+    end
+end
+
+local function claimBooth()
+    local slots = findUnclaimed()
+    if #slots == 0 then return end
+
+    for _, slot in ipairs(slots) do
+        tryClaim(slot)
+        task.wait(1)
+
+        local ui = BoothUI:FindFirstChild("BoothUI"..slot)
+        if ui and ui.Details.Owner.Text:lower():find(LocalPlayer.DisplayName:lower()) then
+            for _, booth in ipairs(Workspace.BoothInteractions:GetChildren()) do
+                if isRealBooth(booth) and booth:GetAttribute("BoothSlot") == slot then
+                    local hrp = LocalPlayer.Character.HumanoidRootPart
+                    hrp.CFrame = booth.CFrame * CFrame.new(3,3,3)
+                    task.wait(0.15)
+                    hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + Vector3.new(0,0,-1))
+                    return
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    task.wait(1.5)
+    claimBooth()
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(2)
+    claimBooth()
+end)
+
+-----------------------------------------------------
+-- UPDATE BOOTH TEXT
+-----------------------------------------------------
+local function updateBoothText()
+    local raised = raisedStat.Value or 0
+
+    local text = string.format(
+        "<b>GOAL: %s / %s</b>",
+        tostring(raised),
+        tostring(_G.goalAmount)
+    )
+
+    if RemotesModule then
+        pcall(function()
+            RemotesModule.Event("SetCustomization"):FireServer({
+                text = text,
+                richText = true,
+                filter = false,
+                textFont = Enum.Font.FredokaOne,
+                textColor = Color3.new(0,0,0),
+                strokeColor = Color3.new(1,1,1),
+                strokeOpacity = 0
+            }, "booth")
+        end)
+    end
+end
+
+task.spawn(function()
+    while task.wait(_G.boardUpdateInterval) do
+        updateBoothText()
+    end
+end)
+
+-----------------------------------------------------
+-- DONATION → JUMP + UPDATE TEXT
+-----------------------------------------------------
+local last = raisedStat.Value
+raisedStat.Changed:Connect(function(v)
+    if v > last then
+        task.spawn(function()
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                for i=1,3 do
+                    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                    task.wait(0.35)
+                end
+            end
+        end)
+        updateBoothText()
+    end
+    last = v
+end)
+
+-----------------------------------------------------
+-- SAY CHAT (robust)
+-----------------------------------------------------
+local function sayChat(msg)
+    if not msg then return end
+
+    -- Default Chat
+    local ok = pcall(function()
+        ReplicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(msg, "All")
+    end)
+    if ok then return end
+
+    -- TextChatService
+    if TextChatService then
+        pcall(function()
+            TextChatService.TextChannels.RBXGeneral:SendAsync(msg)
+        end)
+    end
+end
+
+-----------------------------------------------------
+-- AUTO BEGGING (toggle)
+-----------------------------------------------------
+task.spawn(function()
+    while task.wait(_G.begInterval) do
+        if _G.enableBegging then
+            local msg = _G.begMessages[math.random(1,#_G.begMessages)]
+            sayChat(msg)
+        end
+    end
+end)
+
+log("FINAL FIXED SCRIPT LOADED ✓")
