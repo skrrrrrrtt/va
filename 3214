@@ -1,0 +1,151 @@
+-- FULL FIXED SCRIPT + LEFT/RIGHT BOOTH POSITIONING
+
+_G.goalAmount = 1000
+_G.StandPosition = "left" 
+-- options: "left", "right", "front", "behind"
+
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+
+local BoothInteractions = workspace:WaitForChild("BoothInteractions")
+local pg = LocalPlayer.PlayerGui
+
+local mainCheckPosition = Vector3.new(165.161, 0, 311.636)
+
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+repeat task.wait() until pg:FindFirstChild("MapUIContainer")
+local BoothUI = pg.MapUIContainer.MapUI:WaitForChild("BoothUI")
+
+----------------------------------------------------------------------
+-- Find real booths (1–28 only)
+----------------------------------------------------------------------
+local function findUnclaimed()
+    local result = {}
+
+    for _, ui in ipairs(BoothUI:GetChildren()) do
+        if ui:FindFirstChild("Details") and ui.Details.Owner.Text == "unclaimed" then
+            local boothNum = tonumber(ui.Name:match("%d+"))
+
+            for _, hitbox in ipairs(BoothInteractions:GetChildren()) do
+                if hitbox:GetAttribute("BoothSlot") == boothNum then
+                    if (hitbox.Position * Vector3.new(1,0,1) - mainCheckPosition).Magnitude < 92 then
+                        table.insert(result, boothNum)
+                    end
+                end
+            end
+        end
+    end
+
+    return result
+end
+
+----------------------------------------------------------------------
+-- Booth text update
+----------------------------------------------------------------------
+local function updateBoothText()
+    local raised = LocalPlayer.leaderstats.Raised.Value
+    local txt = "GOAL " .. raised .. " / " .. _G.goalAmount
+
+    require(ReplicatedStorage.Remotes).Event("SetCustomization"):FireServer({
+        text = txt,
+        textColor = Color3.new(1,1,1),
+        richText = false
+    }, "booth")
+end
+
+----------------------------------------------------------------------
+-- SAFE TELEPORT + LEFT / RIGHT / FRONT / BEHIND
+----------------------------------------------------------------------
+local function teleportToBooth(boothNum)
+    for _, hitbox in ipairs(BoothInteractions:GetChildren()) do
+        if hitbox:GetAttribute("BoothSlot") == boothNum then
+            
+            local hrp = LocalPlayer.Character:WaitForChild("HumanoidRootPart")
+
+            local base = hitbox.CFrame
+
+            -- Select position offset
+            local offset = Vector3.new(0,0,0)
+
+            if _G.StandPosition == "front" then
+                offset = base.LookVector * -3
+            elseif _G.StandPosition == "behind" then
+                offset = base.LookVector * 3
+            elseif _G.StandPosition == "left" then
+                offset = base.RightVector * -3
+            elseif _G.StandPosition == "right" then
+                offset = base.RightVector * 3
+            end
+
+            -- Safe height
+            local safe = Vector3.new(0, 5, 0)
+
+            -- Final position
+            local finalPos = base.Position + offset + safe
+
+            hrp.CFrame = CFrame.new(finalPos)
+
+            -- Face booth
+            hrp.CFrame = CFrame.new(
+                hrp.Position,
+                base.Position
+            )
+
+            print("Teleported with booth offset:", _G.StandPosition)
+            return
+        end
+    end
+end
+
+----------------------------------------------------------------------
+-- Claim booth
+----------------------------------------------------------------------
+local function claimBooth()
+    local booths = findUnclaimed()
+    if #booths == 0 then return end
+
+    local boothNum = booths[1]
+
+    require(ReplicatedStorage.Remotes).Event("ClaimBooth"):InvokeServer(boothNum)
+    task.wait(1)
+
+    teleportToBooth(boothNum)
+    updateBoothText()
+end
+
+claimBooth()
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    claimBooth()
+end)
+
+----------------------------------------------------------------------
+-- Auto jump on donation
+----------------------------------------------------------------------
+local raised = LocalPlayer.leaderstats.Raised
+local last = raised.Value
+
+raised.Changed:Connect(function(new)
+    if new > last then
+        local hum = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if hum then
+            for i = 1, 3 do
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                task.wait(.3)
+            end
+        end
+        updateBoothText()
+    end
+    last = new
+end)
+
+print("🔥 LEFT/RIGHT POSITION SCRIPT LOADED!")
